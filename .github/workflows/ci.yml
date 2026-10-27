@@ -1,0 +1,95 @@
+name: ci
+
+# Minimal CI so this repo is covered by the org ruleset, which requires a
+# check named `ci-ok` on every PR to the default branch
+# (Surrentum-Org/agent-notes runbooks/org-ruleset.md). From the org template
+# Surrentum-Org/.github workflow-templates/ci-ok.yml.
+#
+# `checks` runs cheap syntax checks on whatever the repo holds: JSON parses,
+# shell scripts pass `bash -n`, Python compiles, JavaScript passes
+# `node --check`. Replace or extend it with real lint/tests when the repo has
+# them, and list every new job in `ci-ok`'s `needs:`.
+#
+# No `paths` filter: a PR that never gets `ci-ok` can never merge.
+#
+# This repo is public, so it runs on GitHub-hosted `ubuntu-latest` (free for
+# public repos). The org's self-hosted runner groups don't serve public repos,
+# and must not: a fork PR could run code on them.
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  checks:
+    name: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: syntax checks
+        run: |
+          set -euo pipefail
+          fail=0
+          files() { git ls-files -z -- "$@" | tr '\0' '\n' | grep -Ev '(^|/)(node_modules|vendor|dist|build)/' || true; }
+          n=0
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            case "$(basename "$f")" in tsconfig*.json|jsconfig*.json|*.jsonc) continue ;; esac
+            n=$((n+1)); python3 -c 'import json,sys; json.load(open(sys.argv[1], encoding="utf-8"))' "$f" || { echo "::error file=$f::invalid JSON"; fail=1; }
+          done < <(files '*.json')
+          echo "json: $n file(s)"
+          n=0
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            n=$((n+1)); bash -n "$f" || { echo "::error file=$f::bash -n failed"; fail=1; }
+          done < <(files '*.sh' '*.bash')
+          echo "shell: $n file(s)"
+          n=0
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            n=$((n+1)); python3 -c 'import ast,sys; ast.parse(open(sys.argv[1], encoding="utf-8").read(), sys.argv[1])' "$f" || { echo "::error file=$f::Python syntax error"; fail=1; }
+          done < <(files '*.py')
+          echo "python: $n file(s)"
+          if command -v node >/dev/null; then
+            n=0
+            while IFS= read -r f; do
+              [ -n "$f" ] || continue
+              n=$((n+1)); node --check "$f" || { echo "::error file=$f::node --check failed"; fail=1; }
+            done < <(files '*.js' '*.mjs' '*.cjs')
+            echo "javascript: $n file(s)"
+          else
+            echo "javascript: node not on this runner, skipped"
+          fi
+          exit $fail
+
+  # The one required check for the default branch. Always runs and reports.
+  # A needed job that succeeded or was skipped passes; failed or cancelled
+  # does not. Shell only, and add every new job to `needs:`.
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: every needed job passed or was skipped
+        env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          echo "needs results: $RESULTS"
+          bad=$(printf '%s' "$RESULTS" | tr -d '[]" \n' | tr ',' '\n' | grep -Ev '^(success|skipped)$' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::a needed job did not pass: ${bad//$'\n'/ }"
+            exit 1
+          fi
