@@ -11,6 +11,10 @@ name: ci
 # them, and list every new job in `ci-ok`'s `needs:`.
 #
 # No `paths` filter: a PR that never gets `ci-ok` can never merge.
+#
+# This repo is public, so it runs on GitHub-hosted `ubuntu-latest` (free for
+# public repos). The org's self-hosted runner groups don't serve public repos,
+# and must not: a fork PR could run code on them.
 on:
   pull_request:
   push:
@@ -27,7 +31,7 @@ concurrency:
 jobs:
   checks:
     name: checks
-    runs-on: [self-hosted, ci]
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -76,7 +80,7 @@ jobs:
     name: ci-ok
     if: always()
     needs: [checks]
-    runs-on: [self-hosted, ci]
+    runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
       - name: every needed job passed or was skipped
